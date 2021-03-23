@@ -3,7 +3,7 @@
  * @LastEditors: Summer
  * @Description: 
  * @Date: 2021-03-18 16:49:43 +0800
- * @LastEditTime: 2021-03-19 10:34:53 +0800
+ * @LastEditTime: 2021-03-23 11:05:28 +0800
  * @FilePath: /network-node-szook/src/index.ts
  */
 import Koa from "koa";
@@ -13,12 +13,17 @@ import xor from "buffer-xor"
 import crypto from "crypto"
 import Redis from "ioredis";
 import { RedisOptions } from "ioredis";
+import net from "net";
 
 type SConfig = {
     signKey: string,
     redis: RedisOptions,
     jobServerKey: string,
     keepKey:string
+}
+
+type Host = {
+    ip: string, port: number, online: boolean
 }
 
 
@@ -66,10 +71,29 @@ const Utils = {
             return a;
         }
     },
-}
 
-type Host = {
-    ip: string, port: number, online: boolean
+    /**
+     * 测试目标存活
+     * @param ip 
+     * @param port 
+     */
+    survive(ip: string, port: number): Promise<boolean> {
+        return new Promise((resolve, reject) => {
+            let survive = false;
+            let socket = net.connect(port, ip, function(){
+                socket.destroy();
+                survive = true;
+            });
+     
+            socket.on('error', function(err) {
+                socket.destroy();
+            });
+     
+            socket.on('close', function() {
+                resolve(survive);
+            });
+        })
+    }
 }
 
 declare namespace IORedis {
@@ -93,10 +117,13 @@ Redis.prototype.keys = async function(pattern: string){
 
 Redis.prototype.findHosts = async function findHosts(key: KeyType): Promise<Host[]> {
     let hosts:Host[] = [];
-    let list = await this.hgetall(key);
-    for(let [addr, online] of list){
-        let [ip, port] = String(addr).split("-");
-        hosts.push({ ip, port:+port, online: !!+online });
+    let list:string[] = await this.keys(key+"*");
+    for(let key of list){
+        let [_, ip, port] = key.split(":")
+        if(ip && port){
+            let online = await this.get(key)
+            hosts.push({ ip, port:+port, online: !!+online });
+        }
     }
     return hosts;
 }
@@ -158,12 +185,22 @@ class ZookRoot extends KoaRouter {
 
     private async online(ctx: Koa.ParameterizedContext, next: Function){
         let hosts = await this.app.redis.findHosts(this.app.config.keepKey);
-        console.log(hosts);
+        let host: Host = <Host>{};
+        for(let h of hosts){
+            if(h.ip + h.port != ctx.params.ip + ctx.params.port){
+                let online = await Utils.survive(h.ip, h.port);
+                if(online){
+                    host = h;
+                    host.online = online;
+                    break;
+                }
+            }
+        }
+        if(!host?.ip) await this.app.redis.del(this.app.config.jobServerKey);
         ctx.body = {
             keepKey: this.app.config.keepKey, 
-            ip: this.app.config.keepKey, 
-            port: this.app.config.keepKey, 
-            id: this.app.config.keepKey, 
+            ip: host?.ip, 
+            port: host?.port, 
             jobServerKey: this.app.config.jobServerKey, 
             redis: this.app.config.redis
         }
