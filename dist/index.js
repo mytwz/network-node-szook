@@ -16,7 +16,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
  * @LastEditors: Summer
  * @Description:
  * @Date: 2021-03-18 16:49:43 +0800
- * @LastEditTime: 2021-03-23 11:05:28 +0800
+ * @LastEditTime: 2021-03-23 16:09:00 +0800
  * @FilePath: /network-node-szook/src/index.ts
  */
 const koa_1 = __importDefault(require("koa"));
@@ -135,6 +135,7 @@ class SZook extends koa_1.default {
     requestInterceptor(ctx, next) {
         return __awaiter(this, void 0, void 0, function* () {
             let body = ctx.request.body.data;
+            let responseError = { code: -1, msg: "数据包格式错误" };
             try {
                 let data = Utils.XORDecoder(body, this.config.signKey);
                 if (data.sign) {
@@ -142,25 +143,30 @@ class SZook extends koa_1.default {
                     let sign = data.sign;
                     delete data.sign;
                     if (Utils.MD5(JSON.stringify(data), this.config.signKey) === sign) {
-                        ctx.params = data;
-                        return yield next();
+                        let flag = yield this.config.accountVerification(data.username, data.password);
+                        if (flag) {
+                            ctx.params = data;
+                            return yield next();
+                        }
+                        responseError = { code: -2, msg: "帐号密码错误" };
                     }
                 }
             }
             catch (error) {
                 console.error(error, body);
+                responseError = { code: -3, msg: "服务器异常" };
             }
             ctx.body = {
-                data: {
-                    code: -1, msg: "数据包格式错误"
-                }
+                data: Utils.XOREncoder(responseError, this.config.signKey)
             };
         });
     }
     responseInterceptor(ctx, next) {
         return __awaiter(this, void 0, void 0, function* () {
             console.log("response", ctx.URL.toString(), ":", ctx.body);
-            ctx.body = { data: Utils.XOREncoder(ctx.body, this.config.signKey) };
+            ctx.body = { data: Utils.XOREncoder(Object.assign(ctx.body, {
+                    code: 100, msg: "OK"
+                }), this.config.signKey) };
             yield next();
         });
     }

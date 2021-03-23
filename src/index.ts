@@ -3,7 +3,7 @@
  * @LastEditors: Summer
  * @Description: 
  * @Date: 2021-03-18 16:49:43 +0800
- * @LastEditTime: 2021-03-23 11:05:28 +0800
+ * @LastEditTime: 2021-03-23 16:09:00 +0800
  * @FilePath: /network-node-szook/src/index.ts
  */
 import Koa from "koa";
@@ -15,11 +15,21 @@ import Redis from "ioredis";
 import { RedisOptions } from "ioredis";
 import net from "net";
 
+/**帐号校验回调 */
+type AccountVerification = (username: string, password: string) => Promise<boolean>
+
+/**启动配置 */
 type SConfig = {
+    /**与客户端约定的签名 Key */
     signKey: string,
+    /**Redis 链接配置 */
     redis: RedisOptions,
+    /**任务服务的Key */
     jobServerKey: string,
-    keepKey:string
+    /**主机上线的Key */
+    keepKey:string,
+    /**帐号校验回调 */
+    accountVerification:AccountVerification,
 }
 
 type Host = {
@@ -148,6 +158,7 @@ class SZook extends Koa {
 
     private async requestInterceptor(ctx: Koa.ParameterizedContext, next: Function){
         let body = ctx.request.body.data;
+        let responseError = { code: -1, msg: "数据包格式错误" }
         try {
             let data = Utils.XORDecoder(body, this.config.signKey);
             if (data.sign) {
@@ -155,23 +166,28 @@ class SZook extends Koa {
                 let sign = data.sign;
                 delete data.sign;
                 if (Utils.MD5(JSON.stringify(data), this.config.signKey) === sign) {
-                    ctx.params = data;
-                    return await next();
+                    let flag = await this.config.accountVerification(data.username, data.password);
+                    if(flag){
+                        ctx.params = data;
+                        return await next();
+                    }
+                    responseError = { code: -2, msg:"帐号密码错误" }
                 }
             }
         } catch (error) {
             console.error(error, body)
+            responseError = { code: -3, msg:"服务器异常" }
         }
         ctx.body = {
-            data: {
-                code: -1, msg: "数据包格式错误"
-            }
+            data: Utils.XOREncoder(responseError, this.config.signKey)
         }
     }
 
     private async responseInterceptor(ctx: Koa.ParameterizedContext, next: Function){
         console.log("response", ctx.URL.toString(), ":", ctx.body)
-        ctx.body = { data: Utils.XOREncoder(<Object>ctx.body, this.config.signKey) };
+        ctx.body = { data: Utils.XOREncoder(Object.assign(ctx.body, {
+            code: 100, msg:"OK"
+        }), this.config.signKey) };
         await next();
     }
 }
